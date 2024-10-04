@@ -43,21 +43,38 @@ last_predictions = deque(maxlen=3)
 st.title("PALDRON: TouchFree HMI")
 st.image("img_pldrn.png", use_column_width=True)  # Background image
 
-# JavaScript code for webcam access
+# JavaScript code for webcam access with Start/Stop buttons
 webcam_html = """
 <div style="text-align: center;">
     <video id="video" width="640" height="480" autoplay></video>
     <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
-    <button id="capture">Capture Frame</button>
+    <button id="start_button">Start</button>
+    <button id="stop_button" disabled>Stop</button>
+    <button id="capture_button" disabled>Capture Frame</button>
 </div>
 
 <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
-    const captureButton = document.getElementById('capture');
+    const startButton = document.getElementById('start_button');
+    const stopButton = document.getElementById('stop_button');
+    const captureButton = document.getElementById('capture_button');
+    let stream = null;
 
-    navigator.mediaDevices.getUserMedia({ video: true }).then(function(stream) {
+    startButton.addEventListener('click', async () => {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
         video.srcObject = stream;
+        startButton.disabled = true;
+        stopButton.disabled = false;
+        captureButton.disabled = false;
+    });
+
+    stopButton.addEventListener('click', () => {
+        stream.getTracks().forEach(track => track.stop());
+        video.srcObject = null;
+        startButton.disabled = false;
+        stopButton.disabled = true;
+        captureButton.disabled = true;
     });
 
     captureButton.addEventListener('click', function() {

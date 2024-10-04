@@ -56,11 +56,11 @@ running = False
 
 # Start video capture when Start button is clicked
 with button_col1:
-    start_button = st.button("Start")
+    start_button = st.button("Start Video")
 
-# Stop video capture when Stop button is clicked
+# Capture a picture from the webcam
 with button_col2:
-    stop_button = st.button("Stop")
+    capture_button = st.button("Capture Picture")
 
 # Print results to a spreadsheet when Print button is clicked
 with button_col3:
@@ -74,11 +74,6 @@ with button_col4:
 if start_button:
     running = True
     cap = cv2.VideoCapture(0)
-
-# Stop video capture when Stop button is clicked
-if stop_button and cap:
-    cap.release()
-    running = False
 
 # Capture and display video in real-time
 if running and cap is not None:
@@ -120,26 +115,40 @@ if running and cap is not None:
                     for i, pred in enumerate(reversed(last_predictions)):
                         cv2.putText(frame, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-            # Check if the detected class is consistent for 2 seconds
-            if detected_class:
-                if detected_class == current_class:
-                    elapsed_time = time.time() - class_start_time
-                    if elapsed_time >= consistency_duration:
-                        if len(last_predictions) == 0 or last_predictions[-1] != current_class:
-                            last_predictions.append(current_class)
-                            logged_predictions.append({
-                                "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "command": current_class
-                            })
-                else:
-                    current_class = detected_class
-                    class_start_time = time.time()
-
             # Display the frame with landmarks, bounding box, and predictions
             frame_width = int(frame.shape[1] * image_width_percent)
             frame_height = int(frame.shape[0] * image_width_percent)
             resized_frame = cv2.resize(frame, (frame_width, frame_height))
             video_placeholder.image(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB), channels="RGB")
+
+# Capture picture and classify hand pose
+if capture_button and cap is not None:
+    ret, frame = cap.read()
+    if ret:
+        # Convert frame to RGB for Mediapipe
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Detect hands and get hand landmarks
+        with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+            result = hands.process(rgb_frame)
+            if result.multi_hand_landmarks:
+                for hand_landmarks in result.multi_hand_landmarks:
+                    # Predict hand pose based on landmarks
+                    predicted_class = predict_hand_pose(hand_landmarks.landmark)
+                    detected_class = class_map[predicted_class]
+
+                    # Display the predicted class
+                    st.write(f"Detected Hand Pose: {detected_class}")
+
+                    # Log the prediction
+                    logged_predictions.append({
+                        "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "command": detected_class
+                    })
+
+                    # Show the captured image with landmarks
+                    mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                    video_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
 
 # Print results to a spreadsheet when Print button is clicked
 if print_button and logged_predictions:
@@ -155,6 +164,3 @@ if download_button and logged_predictions:
     file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
     csv = df.to_csv(index=False)
     st.download_button(label="Download CSV", data=csv, file_name=file_name, mime='text/csv')
-
-
-

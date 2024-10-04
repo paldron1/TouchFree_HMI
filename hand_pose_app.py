@@ -7,6 +7,7 @@ import pandas as pd
 from collections import deque
 from datetime import datetime
 import time
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
 
 # Load the Random Forest model trained on hand landmarks
 model = joblib.load('hand_landmark_random_forest_model.pkl')
@@ -41,117 +42,71 @@ last_predictions = deque(maxlen=3)
 st.title("PALDRON: TouchFree HMI")
 st.image("img_pldrn.png", use_column_width=True)  # Background image
 
-# Increase video size by 5% (e.g., if default width is 640px, it will be 672px)
-image_width_percent = 1.05  # 5% increase in size
+# Streamlit-webrtc video transformer
+class VideoTransformer(VideoTransformerBase):
+    def __init__(self):
+        self.hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.last_predictions = deque(maxlen=3)
+        self.current_class = None
+        self.class_start_time = None
+        self.logged_predictions = []
 
-# Video capture placeholder above the buttons
-video_placeholder = st.empty()
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
 
-# Define a horizontal layout for the buttons at the bottom of the video
-button_col1, button_col2, button_col3, button_col4 = st.columns([1, 1, 1, 1])
-
-# Initialize variables
-cap = None
-running = False
-
-# Start video capture when Start button is clicked
-with button_col1:
-    start_button = st.button("Start Video")
-
-# Capture a picture from the webcam
-with button_col2:
-    capture_button = st.button("Capture Picture")
-
-# Print results to a spreadsheet when Print button is clicked
-with button_col3:
-    print_button = st.button("Print Results")
-
-# Download CSV button
-with button_col4:
-    download_button = st.button("Download CSV")
-
-# Start video capture
-if start_button:
-    running = True
-    cap = cv2.VideoCapture(0)
-
-# Capture and display video in real-time
-if running and cap is not None:
-    with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Convert frame to RGB for Mediapipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Detect hands and get hand landmarks
-            result = hands.process(rgb_frame)
-
-            detected_class = None
-
-            if result.multi_hand_landmarks:
-                for hand_landmarks in result.multi_hand_landmarks:
-                    # Draw hand landmarks on the frame
-                    mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-                    # Predict hand pose based on landmarks
-                    predicted_class = predict_hand_pose(hand_landmarks.landmark)
-                    detected_class = class_map[predicted_class]
-
-                    # Get bounding box coordinates around the hand
-                    h, w, _ = frame.shape
-                    x_min, x_max, y_min, y_max = w, 0, h, 0
-                    for lm in hand_landmarks.landmark:
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        x_min, x_max = min(x, x_min), max(x, x_max)
-                        y_min, y_max = min(y, y_min), max(y, y_max)
-
-                    # Draw bounding box around the hand
-                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-
-                    # Display the last 3 classifications to the far left in red
-                    for i, pred in enumerate(reversed(last_predictions)):
-                        cv2.putText(frame, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-            # Display the frame with landmarks, bounding box, and predictions
-            frame_width = int(frame.shape[1] * image_width_percent)
-            frame_height = int(frame.shape[0] * image_width_percent)
-            resized_frame = cv2.resize(frame, (frame_width, frame_height))
-            video_placeholder.image(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB), channels="RGB")
-
-# Capture picture and classify hand pose
-if capture_button and cap is not None:
-    ret, frame = cap.read()
-    if ret:
         # Convert frame to RGB for Mediapipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Detect hands and get hand landmarks
-        with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
-            result = hands.process(rgb_frame)
-            if result.multi_hand_landmarks:
-                for hand_landmarks in result.multi_hand_landmarks:
-                    # Predict hand pose based on landmarks
-                    predicted_class = predict_hand_pose(hand_landmarks.landmark)
-                    detected_class = class_map[predicted_class]
+        result = self.hands.process(rgb_frame)
+        detected_class = None
 
-                    # Display the predicted class
-                    st.write(f"Detected Hand Pose: {detected_class}")
+        if result.multi_hand_landmarks:
+            for hand_landmarks in result.multi_hand_landmarks:
+                # Draw hand landmarks on the frame
+                mp_drawing.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-                    # Log the prediction
-                    logged_predictions.append({
-                        "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "command": detected_class
-                    })
+                # Predict hand pose based on landmarks
+                predicted_class = predict_hand_pose(hand_landmarks.landmark)
+                detected_class = class_map[predicted_class]
 
-                    # Show the captured image with landmarks
-                    mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                    video_placeholder.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
+                # Get bounding box coordinates around the hand
+                h, w, _ = img.shape
+                x_min, x_max, y_min, y_max = w, 0, h, 0
+                for lm in hand_landmarks.landmark:
+                    x, y = int(lm.x * w), int(lm.y * h)
+                    x_min, x_max = min(x, x_min), max(x, x_max)
+                    y_min, y_max = min(y, y_min), max(y, y_max)
+
+                # Draw bounding box around the hand
+                cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+
+                # Display the last 3 classifications to the far left in red
+                for i, pred in enumerate(reversed(self.last_predictions)):
+                    cv2.putText(img, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+        # Check if the detected class is consistent for 2 seconds
+        if detected_class:
+            if detected_class == self.current_class:
+                elapsed_time = time.time() - self.class_start_time
+                if elapsed_time >= consistency_duration:
+                    if len(self.last_predictions) == 0 or self.last_predictions[-1] != self.current_class:
+                        self.last_predictions.append(self.current_class)
+                        self.logged_predictions.append({
+                            "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "command": self.current_class
+                        })
+            else:
+                self.current_class = detected_class
+                self.class_start_time = time.time()
+
+        return img
+
+# Define streamlit_webrtc component for video streaming
+webrtc_streamer(key="hand_pose_detection", mode=WebRtcMode.SENDRECV, video_transformer_factory=VideoTransformer)
 
 # Print results to a spreadsheet when Print button is clicked
-if print_button and logged_predictions:
+if st.button("Print Results") and logged_predictions:
     df = pd.DataFrame(logged_predictions)
     file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
     df.to_csv(file_name, index=False)
@@ -159,7 +114,7 @@ if print_button and logged_predictions:
     st.dataframe(df)
 
 # Download CSV button logic
-if download_button and logged_predictions:
+if st.button("Download CSV") and logged_predictions:
     df = pd.DataFrame(logged_predictions)
     file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
     csv = df.to_csv(index=False)

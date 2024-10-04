@@ -103,7 +103,8 @@ class VideoTransformer(VideoTransformerBase):
         return img
 
 # Define streamlit_webrtc component for video streaming
-webrtc_streamer(key="hand_pose_detection", mode=WebRtcMode.SENDRECV, video_transformer_factory=VideoTransformer)
+webrtc_streamer(key="hand_pose_detection", mode=WebRtcMode.SENDRECV, video_processor_factory=VideoTransformer)
+
 
 # Print results to a spreadsheet when Print button is clicked
 if st.button("Print Results") and logged_predictions:

@@ -73,7 +73,7 @@ with button_col4:
 # Start video capture
 if start_button:
     running = True
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(0)
 
 # Stop video capture when Stop button is clicked
 if stop_button and cap:

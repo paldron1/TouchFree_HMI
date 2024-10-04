@@ -1,7 +1,7 @@
-pip>=24.0
-setuptools>=65.5.0
+pip
+setuptools
 streamlit
-opencv-python-headless==4.5.3.56
-mediapipe==0.9.0
-numpy==1.21.5
-joblib==1.4.2
+opencv-python-headless
+mediapipe
+numpy
+joblib

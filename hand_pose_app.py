@@ -6,7 +6,8 @@ import joblib
 import pandas as pd
 from collections import deque
 from datetime import datetime
-import tempfile
+import time
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 
 # Load the Random Forest model trained on hand landmarks
 model = joblib.load('hand_landmark_random_forest_model.pkl')
@@ -37,94 +38,92 @@ class_start_time = None
 consistency_duration = 2  # 2 seconds to wait before displaying the new class
 last_predictions = deque(maxlen=3)
 
-st.title("PALDRON: TouchFree HMI")
-st.image("img_pldrn.png", use_column_width=True)  # Background image
+# WebRTC configuration (for camera selection)
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
-# Increase video size by 5% (e.g., if default width is 640px, it will be 672px)
-image_width_percent = 1.05  # 5% increase in size
+# Video Processor class for Streamlit WebRTC
+class HandPoseProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.logged_predictions = []
+        self.current_class = None
+        self.class_start_time = None
+        self.consistency_duration = 4  # Seconds to wait before displaying the new class
+        self.last_predictions = deque(maxlen=3)
+    
+    def recv(self, frame):
+        # Convert the frame to an OpenCV image
+        img = frame.to_ndarray(format="bgr")
 
-# Video file uploader
-uploaded_video = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi"])
-
-if uploaded_video is not None:
-    tfile = tempfile.NamedTemporaryFile(delete=False) 
-    tfile.write(uploaded_video.read())
-
-    cap = cv2.VideoCapture(tfile.name)
-
-    # Initialize Mediapipe Hands
-    with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Convert frame to RGB for Mediapipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Detect hands and get hand landmarks
+        # Process the image for hand pose detection
+        with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+            rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             result = hands.process(rgb_frame)
-
+            
             detected_class = None
 
             if result.multi_hand_landmarks:
                 for hand_landmarks in result.multi_hand_landmarks:
-                    # Draw hand landmarks on the frame
-                    mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                    mp_drawing.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-                    # Predict hand pose based on landmarks
                     predicted_class = predict_hand_pose(hand_landmarks.landmark)
                     detected_class = class_map[predicted_class]
 
                     # Get bounding box coordinates around the hand
-                    h, w, _ = frame.shape
+                    h, w, _ = img.shape
                     x_min, x_max, y_min, y_max = w, 0, h, 0
                     for lm in hand_landmarks.landmark:
                         x, y = int(lm.x * w), int(lm.y * h)
                         x_min, x_max = min(x, x_min), max(x, x_max)
                         y_min, y_max = min(y, y_min), max(y, y_max)
 
-                    # Draw bounding box around the hand
-                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                    cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
 
-                    # Display the last 3 classifications to the far left in red
-                    for i, pred in enumerate(reversed(last_predictions)):
-                        cv2.putText(frame, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    # Display last 3 classifications on the left
+                    for i, pred in enumerate(reversed(self.last_predictions)):
+                        cv2.putText(img, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-            # Check if the detected class is consistent for 4 seconds
             if detected_class:
-                if detected_class == current_class:
-                    elapsed_time = time.time() - class_start_time
-                    if elapsed_time >= consistency_duration:
-                        if len(last_predictions) == 0 or last_predictions[-1] != current_class:
-                            last_predictions.append(current_class)
-                            logged_predictions.append({
+                if detected_class == self.current_class:
+                    elapsed_time = time.time() - self.class_start_time
+                    if elapsed_time >= self.consistency_duration:
+                        if len(self.last_predictions) == 0 or self.last_predictions[-1] != self.current_class:
+                            self.last_predictions.append(self.current_class)
+                            self.logged_predictions.append({
                                 "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "command": current_class
+                                "command": self.current_class
                             })
                 else:
-                    current_class = detected_class
-                    class_start_time = time.time()
+                    self.current_class = detected_class
+                    self.class_start_time = time.time()
 
-            # Display the frame with landmarks, bounding box, and predictions
-            frame_width = int(frame.shape[1] * image_width_percent)
-            frame_height = int(frame.shape[0] * image_width_percent)
-            resized_frame = cv2.resize(frame, (frame_width, frame_height))
-            st.image(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB), channels="RGB")
+        return img
 
-    cap.release()
+# Streamlit app layout
+st.title("PALDRON: TouchFree HMI")
+
+# Initialize WebRTC streamer with camera selection support
+webrtc_ctx = webrtc_streamer(
+    key="example",
+    mode=WebRtcMode.SENDRECV,
+    rtc_configuration=RTC_CONFIGURATION,
+    media_stream_constraints={"video": True, "audio": False},
+    video_processor_factory=HandPoseProcessor,
+    async_processing=True,
+)
 
 # Print results to a spreadsheet when Print button is clicked
-if st.button("Print Results") and logged_predictions:
-    df = pd.DataFrame(logged_predictions)
+if st.button("Print Results") and webrtc_ctx.video_processor:
+    df = pd.DataFrame(webrtc_ctx.video_processor.logged_predictions)
     file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
     df.to_csv(file_name, index=False)
     st.success(f"Results saved as {file_name}")
     st.dataframe(df)
 
 # Download CSV button logic
-if st.button("Download CSV") and logged_predictions:
-    df = pd.DataFrame(logged_predictions)
+if st.button("Download CSV") and webrtc_ctx.video_processor:
+    df = pd.DataFrame(webrtc_ctx.video_processor.logged_predictions)
     file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
     csv = df.to_csv(index=False)
     st.download_button(label="Download CSV", data=csv, file_name=file_name, mime='text/csv')

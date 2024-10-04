@@ -1,3 +1,4 @@
+import asyncio
 import streamlit as st
 import cv2
 import mediapipe as mp
@@ -8,6 +9,10 @@ from collections import deque
 from datetime import datetime
 import time
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+
+# Ensure the asyncio event loop is properly initialized
+if not asyncio.get_event_loop().is_running():
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Load the Random Forest model trained on hand landmarks
 model = joblib.load('hand_landmark_random_forest_model.pkl')

@@ -1,7 +1,7 @@
 streamlit
-opencv-python-headless
-mediapipe
-numpy
-joblib==1.4.2
+opencv-python-headless==4.5.3.56  # Compatible with most environments
+mediapipe==0.8.6
+numpy==1.21.5  # Choose a version compatible with Python 3.7-3.11
+joblib==1.4.2  # Ensure the correct Python version is being used
 libgl1
 libglib2.0-0

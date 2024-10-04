@@ -3,3 +3,5 @@ ultralytics
 matplotlib
 opencv-python-headless
 pandas
+mediapipe
+joblib 

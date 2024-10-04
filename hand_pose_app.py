@@ -1,55 +1,44 @@
 import streamlit as st
 import cv2
-import mediapipe as mp
 import numpy as np
-import joblib
-import pandas as pd
-from collections import deque
-from datetime import datetime
 import time
+from datetime import datetime
+from collections import deque
+import pandas as pd
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 
-# Load the Random Forest model trained on hand landmarks
+# Load your trained Random Forest model
+import joblib
 model = joblib.load('hand_landmark_random_forest_model.pkl')
 
-# Initialize Mediapipe Hands model
+# Mediapipe initialization for hand landmarks
+import mediapipe as mp
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
+
+# RTC Configuration with STUN/TURN server
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},  # Public STUN server
+        {
+            "urls": "turn:TURN_SERVER_IP_ADDRESS",   # Replace with your TURN server
+            "username": "TURN_USERNAME",            # Replace with your TURN username
+            "credential": "TURN_PASSWORD"           # Replace with your TURN password
+        }
+    ]
+})
 
 # Function to preprocess hand landmarks for prediction
 def preprocess_landmarks(landmarks):
     return np.array([[lm.x, lm.y, lm.z] for lm in landmarks]).flatten()
 
-# Function to predict hand pose based on hand landmarks
-def predict_hand_pose(landmarks):
-    processed_landmarks = preprocess_landmarks(landmarks)
-    prediction = model.predict([processed_landmarks])
-    return prediction[0]
-
-# Logging predictions in a list
-logged_predictions = []
-
-# Class mapping
-class_map = {0: 'Start Particle Counter', 1: 'Pause Particle Counter', 2: 'Stop Particle Counter'}
-
-# Variables to track consistent detection
-current_class = None
-class_start_time = None
-consistency_duration = 2  # 2 seconds to wait before displaying the new class
-last_predictions = deque(maxlen=3)
-
-# WebRTC configuration (for camera selection)
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
-
-# Video Processor class for Streamlit WebRTC
+# Class for processing video frames for hand pose detection
 class HandPoseProcessor(VideoProcessorBase):
     def __init__(self):
         self.logged_predictions = []
         self.current_class = None
         self.class_start_time = None
-        self.consistency_duration = 4  # Seconds to wait before displaying the new class
+        self.consistency_duration = 2  # Seconds to wait before displaying the new class
         self.last_predictions = deque(maxlen=3)
     
     def recv(self, frame):
@@ -67,7 +56,10 @@ class HandPoseProcessor(VideoProcessorBase):
                 for hand_landmarks in result.multi_hand_landmarks:
                     mp_drawing.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-                    predicted_class = predict_hand_pose(hand_landmarks.landmark)
+                    # Predict hand pose based on landmarks
+                    processed_landmarks = preprocess_landmarks(hand_landmarks.landmark)
+                    predicted_class = model.predict([processed_landmarks])[0]
+                    class_map = {0: 'Start Particle Counter', 1: 'Pause Particle Counter', 2: 'Stop Particle Counter'}
                     detected_class = class_map[predicted_class]
 
                     # Get bounding box coordinates around the hand
@@ -102,10 +94,11 @@ class HandPoseProcessor(VideoProcessorBase):
 
 # Streamlit app layout
 st.title("PALDRON: TouchFree HMI")
+st.image("img_pldrn.png", use_column_width=True)  # Background image
 
-# Initialize WebRTC streamer with camera selection support
+# Initialize WebRTC streamer with camera selection and STUN/TURN servers
 webrtc_ctx = webrtc_streamer(
-    key="example",
+    key="hand-pose-detection",
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTC_CONFIGURATION,
     media_stream_constraints={"video": True, "audio": False},

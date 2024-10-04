@@ -101,6 +101,11 @@ class VideoTransformer(VideoTransformerBase):
                 self.class_start_time = time.time()
 
         return img
+import asyncio
+
+# Ensure the asyncio event loop is properly initialized
+if not asyncio.get_event_loop().is_running():
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Define streamlit_webrtc component for video streaming
 webrtc_streamer(key="hand_pose_detection", mode=WebRtcMode.SENDRECV, video_processor_factory=VideoTransformer)

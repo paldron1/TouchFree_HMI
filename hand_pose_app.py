@@ -1,18 +1,17 @@
 import streamlit as st
 import cv2
+import mediapipe as mp
 import numpy as np
-import pandas as pd
-from datetime import datetime
-import base64
-from io import BytesIO
-from PIL import Image
-
-# Load your trained Random Forest model
 import joblib
+import pandas as pd
+from collections import deque
+from datetime import datetime
+import time
+
+# Load the Random Forest model trained on hand landmarks
 model = joblib.load('hand_landmark_random_forest_model.pkl')
 
-# Mediapipe initialization for hand landmarks
-import mediapipe as mp
+# Initialize Mediapipe Hands model
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 
@@ -20,99 +19,142 @@ mp_drawing = mp.solutions.drawing_utils
 def preprocess_landmarks(landmarks):
     return np.array([[lm.x, lm.y, lm.z] for lm in landmarks]).flatten()
 
-# Helper function to decode base64 image data to OpenCV format
-def decode_base64_to_image(image_base64):
-    image_bytes = base64.b64decode(image_base64.split(',')[1])
-    image = np.frombuffer(image_bytes, dtype=np.uint8)
-    image = cv2.imdecode(image, cv2.IMREAD_COLOR)
-    return image
+# Function to predict hand pose based on hand landmarks
+def predict_hand_pose(landmarks):
+    processed_landmarks = preprocess_landmarks(landmarks)
+    prediction = model.predict([processed_landmarks])
+    return prediction[0]
 
-# Function to run hand pose detection
-def detect_hand_pose(image):
-    with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        result = hands.process(rgb_image)
-        if result.multi_hand_landmarks:
-            for hand_landmarks in result.multi_hand_landmarks:
-                mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                processed_landmarks = preprocess_landmarks(hand_landmarks.landmark)
-                predicted_class = model.predict([processed_landmarks])[0]
-                class_map = {0: 'Start Particle Counter', 1: 'Pause Particle Counter', 2: 'Stop Particle Counter'}
-                return image, class_map[predicted_class]
-    return image, None
+# Logging predictions in a list
+logged_predictions = []
 
-# JavaScript for accessing webcam and capturing images
-webcam_html = """
-    <script>
-    let video = document.createElement('video');
-    let canvas = document.createElement('canvas');
-    video.style.display = 'none';
-    canvas.style.display = 'none';
-    document.body.appendChild(video);
-    document.body.appendChild(canvas);
-    
-    async function startWebcam() {
-        let stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        video.srcObject = stream;
-        video.play();
-        return stream;
-    }
+# Class mapping
+class_map = {0: 'Start Particle Counter', 1: 'Pause Particle Counter', 2: 'Stop Particle Counter'}
 
-    async function captureImage() {
-        if (!video.srcObject) {
-            await startWebcam();
-        }
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        let context = canvas.getContext('2d');
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        let dataUrl = canvas.toDataURL('image/jpeg');
-        return dataUrl;
-    }
-
-    window.captureWebcamImage = async function() {
-        return await captureImage();
-    }
-    </script>
-"""
-
+# Variables to track consistent detection
+current_class = None
+class_start_time = None
+consistency_duration = 2  # 2 seconds to wait before displaying the new class
+last_predictions = deque(maxlen=3)
 
 # Streamlit app layout
 st.title("PALDRON: TouchFree HMI")
 st.image("img_pldrn.png", use_column_width=True)  # Background image
 
+# Increase video size by 5% (e.g., if default width is 640px, it will be 672px)
+image_width_percent = 1.05  # 5% increase in size
 
-# Embed webcam HTML and JS into Streamlit
-st.components.v1.html(webcam_html, height=0)
+# Video capture placeholder above the buttons
+video_placeholder = st.empty()
 
-# Button to capture image from webcam
-if st.button('Capture Image from Webcam'):
-    image_data_url = st.js.eval("window.captureWebcamImage()")
-    
-    if image_data_url:
-        # Convert base64 image data to OpenCV image
-        image = decode_base64_to_image(image_data_url)
+# Define a horizontal layout for the buttons at the bottom of the video
+button_col1, button_col2, button_col3, button_col4 = st.columns([1, 1, 1, 1])
 
-        # Perform hand pose detection on the captured image
-        image, detected_class = detect_hand_pose(image)
+# Initialize variables
+cap = None
+running = False
 
-        # Display the processed image
-        st.image(image, caption=f"Captured Image - Detected Pose: {detected_class}", use_column_width=True)
+# Start video capture when Start button is clicked
+with button_col1:
+    start_button = st.button("Start")
 
-        # Log the detected class with a timestamp if a pose is detected
-        if detected_class:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.write(f"Detected Pose: {detected_class} at {timestamp}")
+# Stop video capture when Stop button is clicked
+with button_col2:
+    stop_button = st.button("Stop")
 
-# Download button to save image data (Optional)
-if st.button('Download Captured Image'):
-    if image_data_url:
-        img = decode_base64_to_image(image_data_url)
-        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        buf = BytesIO()
-        pil_img.save(buf, format="JPEG")
-        byte_im = buf.getvalue()
+# Print results to a spreadsheet when Print button is clicked
+with button_col3:
+    print_button = st.button("Print Results")
 
-        b64 = base64.b64encode(byte_im).decode()
-        href = f'<a href="data:file/jpg;base64,{b64}" download="captured_image.jpg">Download captured image</a>'
-        st.markdown(href, unsafe_allow_html=True)
+# Download CSV button
+with button_col4:
+    download_button = st.button("Download CSV")
+
+# Start video capture
+if start_button:
+    running = True
+    cap = cv2.VideoCapture(1)
+
+# Stop video capture when Stop button is clicked
+if stop_button and cap:
+    cap.release()
+    running = False
+
+# Capture and display video in real-time
+if running and cap is not None:
+    with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Convert frame to RGB for Mediapipe
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Detect hands and get hand landmarks
+            result = hands.process(rgb_frame)
+
+            detected_class = None
+
+            if result.multi_hand_landmarks:
+                for hand_landmarks in result.multi_hand_landmarks:
+                    # Draw hand landmarks on the frame
+                    mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+                    # Predict hand pose based on landmarks
+                    predicted_class = predict_hand_pose(hand_landmarks.landmark)
+                    detected_class = class_map[predicted_class]
+
+                    # Get bounding box coordinates around the hand
+                    h, w, _ = frame.shape
+                    x_min, x_max, y_min, y_max = w, 0, h, 0
+                    for lm in hand_landmarks.landmark:
+                        x, y = int(lm.x * w), int(lm.y * h)
+                        x_min, x_max = min(x, x_min), max(x, x_max)
+                        y_min, y_max = min(y, y_min), max(y, y_max)
+
+                    # Draw bounding box around the hand
+                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+
+                    # Display the last 3 classifications to the far left in red
+                    for i, pred in enumerate(reversed(last_predictions)):
+                        cv2.putText(frame, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+            # Check if the detected class is consistent for 2 seconds
+            if detected_class:
+                if detected_class == current_class:
+                    elapsed_time = time.time() - class_start_time
+                    if elapsed_time >= consistency_duration:
+                        if len(last_predictions) == 0 or last_predictions[-1] != current_class:
+                            last_predictions.append(current_class)
+                            logged_predictions.append({
+                                "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "command": current_class
+                            })
+                else:
+                    current_class = detected_class
+                    class_start_time = time.time()
+
+            # Display the frame with landmarks, bounding box, and predictions
+            frame_width = int(frame.shape[1] * image_width_percent)
+            frame_height = int(frame.shape[0] * image_width_percent)
+            resized_frame = cv2.resize(frame, (frame_width, frame_height))
+            video_placeholder.image(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB), channels="RGB")
+
+# Print results to a spreadsheet when Print button is clicked
+if print_button and logged_predictions:
+    df = pd.DataFrame(logged_predictions)
+    file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
+    df.to_csv(file_name, index=False)
+    st.success(f"Results saved as {file_name}")
+    st.dataframe(df)
+
+# Download CSV button logic
+if download_button and logged_predictions:
+    df = pd.DataFrame(logged_predictions)
+    file_name = f'logged_predictions_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.csv'
+    csv = df.to_csv(index=False)
+    st.download_button(label="Download CSV", data=csv, file_name=file_name, mime='text/csv')
+
+
+

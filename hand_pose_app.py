@@ -1,4 +1,3 @@
-import asyncio
 import streamlit as st
 import cv2
 import mediapipe as mp
@@ -9,10 +8,6 @@ from collections import deque
 from datetime import datetime
 import time
 from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
-
-# Ensure the asyncio event loop is properly initialized
-if not asyncio.get_event_loop().is_running():
-    asyncio.set_event_loop(asyncio.new_event_loop())
 
 # Load the Random Forest model trained on hand landmarks
 model = joblib.load('hand_landmark_random_forest_model.pkl')
@@ -47,7 +42,7 @@ last_predictions = deque(maxlen=3)
 st.title("PALDRON: TouchFree HMI")
 st.image("img_pldrn.png", use_column_width=True)  # Background image
 
-# Streamlit-webrtc video transformer
+# Streamlit-webrtc video processor
 class VideoTransformer(VideoTransformerBase):
     def __init__(self):
         self.hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -107,10 +102,8 @@ class VideoTransformer(VideoTransformerBase):
 
         return img
 
-
 # Define streamlit_webrtc component for video streaming
 webrtc_streamer(key="hand_pose_detection", mode=WebRtcMode.SENDRECV, video_processor_factory=VideoTransformer)
-
 
 # Print results to a spreadsheet when Print button is clicked
 if st.button("Print Results") and logged_predictions:

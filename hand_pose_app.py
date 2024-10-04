@@ -7,7 +7,8 @@ import pandas as pd
 from collections import deque
 from datetime import datetime
 import time
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, WebRtcMode
+import streamlit.components.v1 as components
+import base64
 
 # Load the Random Forest model trained on hand landmarks
 model = joblib.load('hand_landmark_random_forest_model.pkl')
@@ -42,23 +43,54 @@ last_predictions = deque(maxlen=3)
 st.title("PALDRON: TouchFree HMI")
 st.image("img_pldrn.png", use_column_width=True)  # Background image
 
-# Streamlit-webrtc video processor
-class VideoTransformer(VideoTransformerBase):
-    def __init__(self):
-        self.hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
-        self.last_predictions = deque(maxlen=3)
-        self.current_class = None
-        self.class_start_time = None
-        self.logged_predictions = []
+# JavaScript code for webcam access
+webcam_html = """
+<div style="text-align: center;">
+    <video id="video" width="640" height="480" autoplay></video>
+    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+    <button id="capture">Capture Frame</button>
+</div>
 
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const captureButton = document.getElementById('capture');
 
-        # Convert frame to RGB for Mediapipe
-        rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    navigator.mediaDevices.getUserMedia({ video: true }).then(function(stream) {
+        video.srcObject = stream;
+    });
 
-        # Detect hands and get hand landmarks
-        result = self.hands.process(rgb_frame)
+    captureButton.addEventListener('click', function() {
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0, 640, 480);
+        const dataUrl = canvas.toDataURL('image/png');
+        window.parent.postMessage(dataUrl, '*');
+    });
+</script>
+"""
+
+# Include the JavaScript in the Streamlit app
+components.html(webcam_html)
+
+# Capture the image when the JavaScript sends it back
+image_data = st.experimental_get_query_params().get('dataUrl')
+if image_data:
+    image_data = image_data[0].split(',')[1]  # Strip data URL metadata
+    image_bytes = base64.b64decode(image_data)
+
+    # Convert the image to a format that OpenCV can process
+    np_img = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+
+    # Display the captured image
+    st.image(img, caption="Captured Frame", use_column_width=True)
+
+    # Convert frame to RGB for Mediapipe
+    rgb_frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    # Detect hands and get hand landmarks
+    with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
+        result = hands.process(rgb_frame)
         detected_class = None
 
         if result.multi_hand_landmarks:
@@ -82,28 +114,26 @@ class VideoTransformer(VideoTransformerBase):
                 cv2.rectangle(img, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
 
                 # Display the last 3 classifications to the far left in red
-                for i, pred in enumerate(reversed(self.last_predictions)):
+                for i, pred in enumerate(reversed(last_predictions)):
                     cv2.putText(img, pred, (10, 30 + (i * 30)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        # Check if the detected class is consistent for 2 seconds
-        if detected_class:
-            if detected_class == self.current_class:
-                elapsed_time = time.time() - self.class_start_time
-                if elapsed_time >= consistency_duration:
-                    if len(self.last_predictions) == 0 or self.last_predictions[-1] != self.current_class:
-                        self.last_predictions.append(self.current_class)
-                        self.logged_predictions.append({
-                            "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "command": self.current_class
-                        })
-            else:
-                self.current_class = detected_class
-                self.class_start_time = time.time()
+            # Check if the detected class is consistent for 2 seconds
+            if detected_class:
+                if detected_class == current_class:
+                    elapsed_time = time.time() - class_start_time
+                    if elapsed_time >= consistency_duration:
+                        if len(last_predictions) == 0 or last_predictions[-1] != current_class:
+                            last_predictions.append(current_class)
+                            logged_predictions.append({
+                                "time_stamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "command": current_class
+                            })
+                else:
+                    current_class = detected_class
+                    class_start_time = time.time()
 
-        return img
-
-# Define streamlit_webrtc component for video streaming
-webrtc_streamer(key="hand_pose_detection", mode=WebRtcMode.SENDRECV, video_processor_factory=VideoTransformer)
+    # Display updated image with hand landmarks and bounding box
+    st.image(img, caption="Processed Frame with Hand Landmarks", use_column_width=True)
 
 # Print results to a spreadsheet when Print button is clicked
 if st.button("Print Results") and logged_predictions:
